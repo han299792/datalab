@@ -223,12 +223,10 @@ int twin() {
  *   Rating: 2
  */
 int fitsBits(int x, int n) {
-  int shift = 33 + ~n;
-  int sign = x >> 31;
-  int shifted = x << shift;
-  int shifted_sign = shifted >> shift;
-  return !(shifted ^ shifted_sign);
+  int shift = 32 + (~n + 1); 
+  return !(x ^ ((x << shift) >> shift));
 }
+
 /* 
  * divpwr2 - Compute x/(2^n), for 0 <= n <= 30
  *  Round toward zero
@@ -238,11 +236,10 @@ int fitsBits(int x, int n) {
  *   Rating: 2
  */
 int divpwr2(int x, int n) {
-  int sign = x >> 31;
-  int bias = (1 << n) + ~1;
-  int adjusted = (x + bias) >> n;
-  return adjusted ^ sign;
+  int bias = (x >> 31) & ((1 << n) + ~0);  
+  return (x + bias) >> n;
 }
+
 /* 
  * negate - return -x 
  *   Example: negate(1) = -1.
@@ -261,10 +258,9 @@ int negate(int x) {
  *   Rating: 3
  */
 int isPositive(int x) {
-  int sign = x >> 31;
-  int zero = !x;
-  return !sign & !zero; 
+  return !((x >> 31) | !x);
 }
+
 /* 
  * isLessOrEqual - if x <= y  then return 1, else return 0 
  *   Example: isLessOrEqual(4,5) = 1.
@@ -273,14 +269,13 @@ int isPositive(int x) {
  *   Rating: 3
  */
 int isLessOrEqual(int x, int y) {
-  int sign_x = x >> 31;
-  int sign_y = y >> 31;
-  int sign_diff = sign_x ^ sign_y;
-  int diff = y + (~x + 1);
-  int diff_sign = diff >> 31;
-  
-  return (sign_diff & sign_x) | (!sign_diff & !diff_sign);
+  int sx = x >> 31;
+  int sy = y >> 31;
+  int sameSign = !(sx ^ sy);
+  int diff = y + ~x + 1;  // y - x
+  return (sx & !sy) | (sameSign & !(diff >> 31));
 }
+
 /*
  * ilog2 - return floor(log base 2 of x), where x > 0
  *   Example: ilog2(16) = 4
@@ -289,22 +284,15 @@ int isLessOrEqual(int x, int y) {
  *   Rating: 4
  */
 int ilog2(int x) {
-  int result = 0;
-  int mask = 0xFF << 24;
-  int shift = 24;
-
-  while (mask) {
-    int shifted = x & mask;
-    if (shifted) {
-      result += shift;
-      x = shifted;
-    }
-    mask >>= 8;
-    shift -= 8;
-  }
-
-  return result;
+  int res = 0;
+  res = (!!(x >> 16)) << 4;
+  res = res + ((!!(x >> (res + 8))) << 3);
+  res = res + ((!!(x >> (res + 4))) << 2);
+  res = res + ((!!(x >> (res + 2))) << 1);
+  res = res + (!!(x >> (res + 1)));
+  return res;
 }
+
 /* 
  * float_neg - Return bit-level equivalent of expression -f for
  *   floating point argument f.
@@ -317,15 +305,12 @@ int ilog2(int x) {
  *   Rating: 2
  */
 unsigned float_neg(unsigned uf) {
-  unsigned sign = uf & 0x80000000;
-  unsigned exp = uf & 0x7F800000;
-  unsigned frac = uf & 0x007FFFFF;
-
-  if (exp == 0x7F800000 && frac != 0) {
-    return uf; // NaN
+  unsigned exp = (uf >> 23) & 0xFF;
+  unsigned frac = uf & 0x7FFFFF;
+  if (exp == 0xFF && frac != 0) {
+      return uf;
   }
-
-  return sign ^ 0x80000000 | exp | frac;
+  return uf ^ (1 << 31);
 }
 /* 
  * float_i2f - Return bit-level equivalent of expression (float) x
@@ -337,25 +322,36 @@ unsigned float_neg(unsigned uf) {
  *   Rating: 4
  */
 unsigned float_i2f(int x) {
-  if (x == 0) {
-    return 0;
+  unsigned sign = 0;
+  unsigned abs_x = x;
+  int shift = 0;
+  int exp, frac, round;
+
+  if (x == 0) return 0;
+  if (x < 0) {
+      sign = 1 << 31;
+      abs_x = -x;
   }
 
-  int sign = x & 0x80000000;
-  if (sign) {
-    x = ~x + 1; // Two's complement
+  unsigned temp = abs_x;
+  while ((temp >>= 1) != 0) {
+      shift++;
   }
 
-  int exp = 158;
-  while ((x & 0x80000000) == 0) {
-    x <<= 1;
-    exp--;
+  exp = shift + 127;
+  abs_x = abs_x << (31 - shift);
+  frac = (abs_x >> 8) & 0x7FFFFF;
+  round = abs_x & 0xFF;
+
+  if (round > 128 || (round == 128 && (frac & 1))) {
+      frac++;
+      if (frac >> 23) {
+          frac = 0;
+          exp++;
+      }
   }
 
-  x &= ~0x80000000; // Clear the sign bit
-  x = (exp << 23) | (x >> 8);
-
-  return sign | x;
+  return sign | (exp << 23) | frac;
 }
 /* 
  * float_twice - Return bit-level equivalent of expression 2*f for
@@ -369,5 +365,22 @@ unsigned float_i2f(int x) {
  *   Rating: 4
  */
 unsigned float_twice(unsigned uf) {
-  return 2;
+  unsigned sign = uf & 0x80000000;
+  unsigned exp = (uf >> 23) & 0xFF;
+  unsigned frac = uf & 0x7FFFFF;
+
+  if (exp == 0xFF) return uf;
+
+  if (exp == 0) {
+      frac <<= 1;
+      if (frac & 0x800000) {
+          exp = 1;
+          frac &= 0x7FFFFF;
+      }
+  } else {
+      exp++;
+      if (exp == 0xFF) frac = 0;
+  }
+
+  return sign | (exp << 23) | frac;
 }
